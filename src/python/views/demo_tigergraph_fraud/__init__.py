@@ -84,9 +84,9 @@ def sidebar_area():
     )
 
     max_trust = st.sidebar.slider(
-        'Maximum Trust Score', min_value=0.01, max_value=1, value=num_edges_init)
+        'Maximum Trust Score', min_value=0.01, max_value=1.00, value=num_edges_init)
     urlParams.set_field('max_trust', max_trust)
-    urlParams.set_field('user_id', patient_id)
+    urlParams.set_field('user_id', user_id)
 
     return {'max_trust': max_trust, 'user_id': user_id}
 
@@ -139,6 +139,7 @@ def plot_url(nodes_df, edges_df):
 
 import pyTigerGraphBeta as tg
 import pandas as pd
+import datetime
 
 def type_to_color(t):
     mapper = {'User': 0xFF000000}
@@ -151,6 +152,12 @@ def type_to_color(t):
 @st.cache(suppress_st_warning=True, allow_output_mutation=True)
 def run_filters(max_trust, user_id):
     global metrics
+    global conn
+
+    if conn is None:
+        conn = tg.TigerGraphConnection(host="https://fraud-graph-kit.i.tgcloud.io", graphname="AntiFraud", username="tigergraph", password="tigergraph")
+    
+    conn.getToken("g8ivecpsuei7hs0hf8i0a2kcfi5oq0pl")
     
     # secret = conn.createSecret()
     #token = conn.getToken("hna88qpb3g87l3b8qcv1v01eju75jnqr", setToken=True)
@@ -171,7 +178,7 @@ def run_filters(max_trust, user_id):
     # edges = q[0]['@@AllE']
 
     q = conn.runInstalledQuery("fraudConnectivity",{"inputUser":user_id, "trustScore":max_trust})
-    edges = q[0]['@@visResult']
+    edges = q[1]['@@visResult']
 
     for edge in edges:
         source_col.append(edge['from_id'])
@@ -220,6 +227,7 @@ def run_filters(max_trust, user_id):
 
 
 def main_area(url, nodes, edges, user_id):
+    global conn
 
     logger.debug('rendering main area, with url: %s', url)
     GraphistrySt().render_url(url)
@@ -227,38 +235,47 @@ def main_area(url, nodes, edges, user_id):
     dates = []
     amounts = []
     transfer_type = []
-
+    results = None
+    if conn is None:
+        conn = tg.TigerGraphConnection(host="https://fraud-graph-kit.i.tgcloud.io", graphname="AntiFraud", username="tigergraph", password="tigergraph")
+    
+    conn.getToken("g8ivecpsuei7hs0hf8i0a2kcfi5oq0pl")
     try:
-        results = conn.runInstalledQuery("TotalTransaction", params={"Source": user_id})[0]
+        results = conn.runInstalledQuery("totalTransaction", params={"Source": user_id})[0]
     except Exception as e:
         print(e)
     
     # Create bar chart of transactions
-    for action in results:
-        for transfer in results[action]:
-            dates.append(datetime.datetime.fromtimestamp(transfer['attributes']['ts']))
-            amounts.append(transfer['attributes']['amount'])
-            transfer_type.append(action)
-    cols = list(zip(dates, amounts, transfer_type))
-    cols = sorted(cols, key=lambda x: x[0].day)
-    cols = sorted(cols, key=lambda x: x[0].month)
-    cols = sorted(cols, key=lambda x: x[0].year)
-    df = pd.DataFrame(data=cols, columns=['Date', 'Amount', 'Type'])
-    df['Date'] = pd.to_datetime(df['Date'])
-    map_color = {"receive":"rgba(0,0,255,0.5)", "transfer":"rgba(255,0,0,0.5)"}
-    df['Color'] = df['Type'].map(map_color)
+    if results != None:
+        for action in results:
+            for transfer in results[action]:
+                dates.append(datetime.datetime.fromtimestamp(transfer['attributes']['ts']))
+                amounts.append(transfer['attributes']['amount'])
+                transfer_type.append(action)
+        cols = list(zip(dates, amounts, transfer_type))
+        cols = sorted(cols, key=lambda x: x[0].day)
+        cols = sorted(cols, key=lambda x: x[0].month)
+        cols = sorted(cols, key=lambda x: x[0].year)
+        df = pd.DataFrame(data=cols, columns=['Date', 'Amount', 'Type'])
+        df['Date'] = pd.to_datetime(df['Date'])
+        map_color = {"receive":"rgba(0,0,255,0.5)", "transfer":"rgba(255,0,0,0.5)"}
+        df['Color'] = df['Type'].map(map_color)
 
-    df = df.groupby([df['Date'].dt.to_period('M'), 'Type', 'Color']).sum()
-    df = df.reset_index(level=['Type', 'Color'])
-    df.index = df.index.values.astype('datetime64[M]')
-    bar = px.bar(df, x=df.index, y='Amount', labels={'x': 'Date'}, color='Type', color_discrete_map = map_color, text='Amount', title="Transaction Amounts by Month", height=350, barmode='group')
-    bar.update_xaxes(
-        dtick="M1",
-        tickformat="%b\n%Y")
-    for trace in bar.data:
-        trace.name = trace.name.split('=')[1].capitalize()
+        df = df.groupby([df['Date'].dt.to_period('M'), 'Type', 'Color']).sum()
+        df = df.reset_index(level=['Type', 'Color'])
+        df.index = df.index.values.astype('datetime64[M]')
+        bar = px.bar(df, x=df.index, y='Amount', labels={'x': 'Date'}, color='Type', color_discrete_map = map_color, text='Amount', title="Transaction Amounts by Month for User {}".format(user_id), height=350, barmode='group')
+        bar.update_xaxes(
+            dtick="M1",
+            tickformat="%b\n%Y")
+        try:
+            for trace in bar.data:
+                trace.name = trace.name.split('=')[1].capitalize()
+        except:
+            for trace in bar.data:
+                trace.name = trace.name.capitalize()
 
-    st.plotly_chart(bar)
+        st.plotly_chart(bar, use_container_width=True)
 
     st.markdown(f'''<small>
             TigerGraph Load Time (s): {float(metrics['tigergraph_time']):0.2f} | 
