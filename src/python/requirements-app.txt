@@ -1,3 +1,4 @@
 ### your custom requirements here
 #protobuf==3.13.0
 pyTigerGraphBeta
+plotly

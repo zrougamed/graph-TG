@@ -9,6 +9,8 @@ from css import all_css
 from util import getChild
 import time
 import altair as alt
+from TigerGraph_helper import tg_helper
+import plotly.express as px
 
 from gremlin_python import statics
 from gremlin_python.process.graph_traversal import __
@@ -35,6 +37,8 @@ edge_label_col = 'Destination_Type'
 metrics = {'tigergraph_time': 0, 'graphistry_time': 0,
            'node_cnt': 0, 'edge_cnt': 0, 'prop_cnt': 0}
 
+
+conn = tg_helper.connect_to_tigergraph()
 
 # Define the name of the view
 def info():
@@ -68,27 +72,23 @@ def custom_css():
 # Given URL params, render left sidebar form and return combined filter settings
 # https://docs.streamlit.io/en/stable/api.html#display-interactive-widgets
 def sidebar_area():
-    conn = tg.TigerGraphConnection(host="http://172.21.0.1", graphname="MyGraph", username="tigergraph", password="tigergraph",useCert=False)
-    q = conn.runInstalledQuery("mostDirectInfections")
-    Most_infectious_IDS = q[0]['Answer']
-    MI_List = [d['v_id'] for d in Most_infectious_IDS if 'v_id' in d]
-    num_edges_init = urlParams.get_field('num_matches', 50)
-    MI_List.reverse()
-    patient_id = st.sidebar.selectbox(
-        'Patient ID ',
-        MI_List
-        )
+    # q = conn.runInstalledQuery("mostDirectInfections")
+    # Most_infectious_IDS = q[0]['Answer']
+    # MI_List = [d['v_id'] for d in Most_infectious_IDS if 'v_id' in d]
+    num_edges_init = urlParams.get_field('num_matches', 0.5)
+    # MI_List.reverse()
+    idList = [i for i in range(1, 500)]
+    user_id = st.sidebar.selectbox(
+        'User ID ',
+        idList
+    )
 
-    # city = st.sidebar.text_input(
-    #     'Find ',
-    #     "")
+    max_trust = st.sidebar.slider(
+        'Maximum Trust Score', min_value=0.01, max_value=1, value=num_edges_init)
+    urlParams.set_field('max_trust', max_trust)
+    urlParams.set_field('user_id', patient_id)
 
-    num_edges = st.sidebar.slider(
-        'Infection depth', min_value=1, max_value=100, value=num_edges_init, step=1)
-    urlParams.set_field('num_edges', num_edges)
-    urlParams.set_field('patient_id', patient_id)
-
-    return {'num_edges': num_edges, 'patient_id': patient_id}
+    return {'max_trust': max_trust, 'user_id': user_id}
 
 
 def plot_url(nodes_df, edges_df):
@@ -102,8 +102,8 @@ def plot_url(nodes_df, edges_df):
         .edges(edges_df)\
         .bind(edge_color='my_color', source='Source', destination='Destination')\
         .nodes(nodes_df)\
-        .bind(node=src_id_col)
-        
+        .bind(node=src_id_col)     
+
     # if not (node_label_col is None):
     #     g = g.bind(point_title=node_label_col)
 
@@ -141,7 +141,7 @@ import pyTigerGraphBeta as tg
 import pandas as pd
 
 def type_to_color(t):
-    mapper = {'Patient': 0xFF000000}
+    mapper = {'User': 0xFF000000}
     if t in mapper:
         return mapper[t]
     else:
@@ -149,10 +149,8 @@ def type_to_color(t):
 
 # Given filter settings, generate/cache/return dataframes & viz
 @st.cache(suppress_st_warning=True, allow_output_mutation=True)
-def run_filters(num_edges, patient_id):
+def run_filters(max_trust, user_id):
     global metrics
-        
-    conn = tg.TigerGraphConnection(host="http://172.21.0.1", graphname="MyGraph", username="tigergraph", password="tigergraph",useCert=False)
     
     # secret = conn.createSecret()
     #token = conn.getToken("hna88qpb3g87l3b8qcv1v01eju75jnqr", setToken=True)
@@ -172,8 +170,8 @@ def run_filters(num_edges, patient_id):
     # q = conn.runInstalledQuery("getGraph")
     # edges = q[0]['@@AllE']
 
-    q = conn.runInstalledQuery("infectionSubgraph",{"p":patient_id,"depthSize":num_edges})
-    edges = q[0]['@@edgeSet']
+    q = conn.runInstalledQuery("fraudConnectivity",{"inputUser":user_id, "trustScore":max_trust})
+    edges = q[0]['@@visResult']
 
     for edge in edges:
         source_col.append(edge['from_id'])
@@ -221,24 +219,46 @@ def run_filters(num_edges, patient_id):
     return {'nodes_df': nodes_df, 'edges_df': edges_df, 'url': url, 'res': res}
 
 
-def main_area(url, nodes, edges, patient_id):
+def main_area(url, nodes, edges, user_id):
 
     logger.debug('rendering main area, with url: %s', url)
     GraphistrySt().render_url(url)
+
+    dates = []
+    amounts = []
+    transfer_type = []
+
     try:
-        conn = tg.TigerGraphConnection(host="http://172.21.0.1", graphname="MyGraph", username="tigergraph", password="tigergraph",useCert=False)
-        q = conn.runInstalledQuery("ageDistribution")
-        ageMap = q[0]['@@ageMap']
-        # cleaning the N/A Ages
-        del ageMap["2020"]
+        results = conn.runInstalledQuery("TotalTransaction", params={"Source": user_id})[0]
     except Exception as e:
         print(e)
     
-    # Get the count by patient_id of visits shown
-    bar_chart_data = pd.DataFrame.from_dict(ageMap,  orient = 'index')
-    st.bar_chart(bar_chart_data)
-    #Show  a datatable with the values transposed
-    #st.dataframe(bar_chart_data.set_index(group_label).T)
+    # Create bar chart of transactions
+    for action in results:
+        for transfer in results[action]:
+            dates.append(datetime.datetime.fromtimestamp(transfer['attributes']['ts']))
+            amounts.append(transfer['attributes']['amount'])
+            transfer_type.append(action)
+    cols = list(zip(dates, amounts, transfer_type))
+    cols = sorted(cols, key=lambda x: x[0].day)
+    cols = sorted(cols, key=lambda x: x[0].month)
+    cols = sorted(cols, key=lambda x: x[0].year)
+    df = pd.DataFrame(data=cols, columns=['Date', 'Amount', 'Type'])
+    df['Date'] = pd.to_datetime(df['Date'])
+    map_color = {"receive":"rgba(0,0,255,0.5)", "transfer":"rgba(255,0,0,0.5)"}
+    df['Color'] = df['Type'].map(map_color)
+
+    df = df.groupby([df['Date'].dt.to_period('M'), 'Type', 'Color']).sum()
+    df = df.reset_index(level=['Type', 'Color'])
+    df.index = df.index.values.astype('datetime64[M]')
+    bar = px.bar(df, x=df.index, y='Amount', labels={'x': 'Date'}, color='Type', color_discrete_map = map_color, text='Amount', title="Transaction Amounts by Month", height=350, barmode='group')
+    bar.update_xaxes(
+        dtick="M1",
+        tickformat="%b\n%Y")
+    for trace in bar.data:
+        trace.name = trace.name.split('=')[1].capitalize()
+
+    st.plotly_chart(bar)
 
     st.markdown(f'''<small>
             TigerGraph Load Time (s): {float(metrics['tigergraph_time']):0.2f} | 
@@ -274,7 +294,7 @@ def run_all():
             main_area(filter_pipeline_result['url'],
                       filter_pipeline_result['nodes_df'],
                       filter_pipeline_result['edges_df'],
-                      sidebar_filters['patient_id'])
+                      sidebar_filters['user_id'])
         else:  # render a message
             st.write("No data matching the specfiied criteria is found")
 
