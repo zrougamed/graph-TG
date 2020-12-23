@@ -1,0 +1,13 @@
+streamlit==0.70.0
+protobuf==3.13.0
+graphistry==0.14.0
+
+################
+#
+#  Per-DB
+#
+################
+
+### Neptune
+gremlinpython==3.4.8
+sshtunnel==0.1.5
