@@ -24,12 +24,12 @@ from gremlin_python.process.traversal import WithOptions, T
 #  Controls how entrypoint.py picks it up
 
 
-app_id = 'tigergraph_fraud' 
+app_id = 'tigergraph_circle'
 logger = getChild(app_id)
 urlParams = URLParam(app_id)
 node_id_col = 'id'
-src_id_col = 'Source'
-dst_id_col = 'Destination'
+src_id_col = 'from_id'
+dst_id_col = 'to_id'
 node_label_col = 'Source_Type'
 edge_label_col = 'Destination_Type'
 
@@ -44,8 +44,8 @@ conn = tg_helper.connect_to_tigergraph()
 def info():
     return {
         'id': app_id,
-        'name': 'TigerGraph: Fraud Filter',
-        'tags': ['demo', 'tigergraph_demo_fraud']
+        'name': 'TigerGraph: Fraud Filter circle',
+        'tags': ['demo', 'tigergraph_demo_circle']
     }
 
 
@@ -83,35 +83,30 @@ def sidebar_area():
         idList
     )
 
-    max_trust = st.sidebar.slider(
-        'Maximum Trust Score', min_value=0.01, max_value=1.00, value=num_edges_init)
-    urlParams.set_field('max_trust', max_trust)
+
     urlParams.set_field('user_id', user_id)
 
-    return {'max_trust': max_trust, 'user_id': user_id}
+    return { 'user_id': user_id}
 
 
 def plot_url(nodes_df, edges_df):
     global metrics
-    # nodes_df = df_helper.flatten_df(nodes_df)
-    # edges_df = df_helper.flatten_df(edges_df)
 
     logger.info('Starting graphistry plot')
     tic = time.perf_counter()
     g = graphistry\
         .edges(edges_df)\
-        .bind(source='from_id', destination='to_id')\
-        .nodes(nodes_df)\
-        .bind(node='n')\
+        .bind(source='from_id', destination='to_id') \
+        .bind(edge_title='amount', edge_label='amount')\
+        .nodes(nodes_df) \
+        .bind(node='n') \
         .addStyle(bg={'color': 'white'})\
         .encode_point_color("color")\
         .encode_edge_color("color")\
-        .encode_point_icon('type', categorical_mapping={'User': 'laptop', 
-                                                        'Transaction': 'server',
-                                                        'Device_Token': 'mobile',
-                                                        'Payment_Instrument': 'credit-card',
-                                                        }, 
-                                                        default_mapping='question')    
+        .encode_point_icon('type', categorical_mapping={'User': 'laptop',
+                                                       'Transaction': 'server'},
+                          default_mapping='question')
+
 
     # if not (node_label_col is None):
     #     g = g.bind(point_title=node_label_col)
@@ -128,57 +123,41 @@ def plot_url(nodes_df, edges_df):
 
     return url
 
-
-# def path_to_df(p):
-#     nodes = {}
-#     edges = {}
-
-#     for triple in p:
-
-#         src_id = triple[0][T.id]
-#         nodes[src_id] = df_helper.vertex_to_dict(triple[0])
-
-#         dst_id = triple[2][T.id]
-#         nodes[dst_id] = df_helper.vertex_to_dict(triple[2])
-
-#         edges[triple[1][T.id]] = df_helper.edge_to_dict(
-#             triple[1], src_id, dst_id)
-
-#     return pd.DataFrame(nodes.values()), pd.DataFrame(edges.values())
-
 import pyTigerGraphBeta as tg
 import pandas as pd
 import datetime
+#
+# def flatten(lst_of_lst):
+#     try:
+#         if type(lst_of_lst[0]) == list:
+#             return [item for sublist in lst_of_lst for item in sublist]
+#         else:
+#             return lst_of_lst
+#     except:
+#         print('fail', lst_of_lst)
+#         return lst_of_lst
+#
+#
+
 
 # Given filter settings, generate/cache/return dataframes & viz
 @st.cache(suppress_st_warning=True, allow_output_mutation=True)
-def run_filters(max_trust, user_id):
+def run_filters( user_id):
     global metrics
     global conn
 
     if conn is None:
         conn = tg.TigerGraphConnection(host="https://fraud-streamlit.i.tgcloud.io", graphname="AntiFraud", username="tigergraph", password="tigergraph")
     
-    conn.getToken("t58pt35hvf6toh3o84q2hiqooqv6s9qt")
-    
-    # secret = conn.createSecret()
-    #token = conn.getToken("hna88qpb3g87l3b8qcv1v01eju75jnqr", setToken=True)
-    
-    ##################
-
+    conn.getToken("tufp2os5skgljafj7ol4ikht2atc7rbj")
 
     logger.info('Querying Tigergraph')
     tic = time.perf_counter()
 
-    ################
-    #t = g.V().inE()
+    results = conn.runInstalledQuery("circleDetection", {"srcId": user_id,"stepHighLimit":7},sizeLimit=1000000000
+                                     ,timeout=120000)
+    results = results[0]['@@circleEdgeTuples']
 
-    # q = conn.runInstalledQuery("getGraph")
-    # edges = q[0]['@@AllE']
-
-    results = conn.runInstalledQuery("fraudConnectivity", {"inputUser": user_id, "trustScore": max_trust}, sizeLimit=1000000000
-                                     , timeout=120000)
-    results = results[1]['@@visResult']
 
     out = []
     from_ids = []
@@ -186,22 +165,27 @@ def run_filters(max_trust, user_id):
     times = []
     amounts = []
     types = []
-    node_types = []
     from_types = []
     to_types = []
+    
+    for o in results:
+        for s in o:
+            if {"from_id":s["e"]["from_id"],"to_id":s["e"]["to_id"],"amount":s["amount"],"time":s["ts"],"type":s["e"]["e_type"]} not in out:
+                out.append({"from_id":s["e"]["from_id"],"to_id":s["e"]["to_id"],"amount":s["amount"],"time":s["ts"],"type":s["e"]["e_type"]})
+                from_ids.append(s["e"]["from_id"])
+                to_ids.append(s["e"]["to_id"])
+                amounts.append(s["amount"])
+                times.append(s["ts"])
+                types.append(s["e"]["e_type"])
+                from_types.append(s['e']['from_type'])
+                to_types.append(s['e']['from_type'])
 
-    for s in results:
-        from_ids.append(s['from_id'])
-        to_ids.append(s['to_id'])
-        types.append(s['e_type'])
-        from_types.append(s['from_type'])
-        to_types.append(s['to_type'])
-
+    ############# BEGIN
     edges_df = pd.DataFrame({
         'from_id': from_ids,
         'to_id': to_ids,
-        # 'amount': amounts,
-        # 'time': times,
+        'amount': amounts,
+        'time': times,
         'type': types
     })
     node_idf = []
@@ -213,35 +197,30 @@ def run_filters(max_trust, user_id):
         if to_ids[i] not in node_idf:
             node_idf.append(to_ids[i])
             typef.append(to_types[i])
-
+    
     nodeType2color = {
-        'User': 0x00000000,                 # black
-        'Transaction': 0xFF000000,          # red
-        'Payment_Instrument': 0xFF00FF00,   # Purple
-        'Device_Token': 0x00FFFF00          # Light Blue
+        'User': 0x00000000,         # black
+        'Transaction': 0xFF000000   # red
     }
 
     edgeType2color = {
         'User_Transfer_Transaction': 0x00FF0000,
-        'User_Recieve_Transaction_Rev': 0x0000FF00,
-        'User_to_Payment': 0x00F0FF00,
-        'User_to_Device': 0xFF0FF000,
-        'User_Referred_By_User': 0xF0F0F000,
-        'User_Recieve_Transaction': 0x0F0F0F00,
-        'User_Transfer_Transaction_Rev': 0xFF00FF00,
-        'User_Refer_User': 0xFF0F0F00
+        'User_Recieve_Transaction_Rev': 0x0000FF00
     }
+
 
     nodes_df = pd.DataFrame({
         'n': node_idf ,
         'type': typef,
         'size':0.1
     })
-
     nodes_df['color'] = nodes_df['type'].apply(lambda type_str: nodeType2color[type_str])
     edges_df['color'] = edges_df['type'].apply(lambda type_str: edgeType2color[type_str])
 
+    ############### END
+
     try:
+
         res = nodes_df.values.tolist()
         toc = time.perf_counter()
         logger.info(f'Query Execution: {toc-tic:0.02f} seconds')
@@ -261,7 +240,6 @@ def run_filters(max_trust, user_id):
     except Exception as e:
         logger.error('oops in TigerGraph', exc_info=True)
         raise e
-
     logger.info("Finished compute phase")
 
     try:
@@ -295,7 +273,7 @@ def main_area(url, nodes, edges, user_id):
     if conn is None:
         conn = tg.TigerGraphConnection(host="https://fraud-streamlit.i.tgcloud.io", graphname="AntiFraud", username="tigergraph", password="tigergraph")
     
-    conn.getToken("t58pt35hvf6toh3o84q2hiqooqv6s9qt")
+    conn.getToken("tufp2os5skgljafj7ol4ikht2atc7rbj")
     try:
         results = conn.runInstalledQuery("totalTransaction", params={"Source": user_id})[0]
     except Exception as e:
