@@ -94,6 +94,7 @@ def sidebar_area():
 def plot_url(nodes_df, edges_df):
     global metrics
     # .encode_point_color("color") \
+
     try:
         logger.info('Starting graphistry plot')
         tic = time.perf_counter()
