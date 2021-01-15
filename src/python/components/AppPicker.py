@@ -77,6 +77,13 @@ class AppPicker:
         logger.debug('loaded mods: %s', modules_by_id)
 
         view = None
+        # # Tiger Graph
+        # tg_srv = st.sidebar.text_input("Tiger Graph Box", "https://<box>.i.tgcloud.io")
+        # tg_usr = st.sidebar.text_input("Tiger Graph User", "tigergraph")
+        # tg_psw = st.sidebar.text_input("Tiger Graph password", "tigergraph")
+        # tg_grp = st.sidebar.text_input("Tiger Graph Graph", "AntiFraud")
+        # tg_sct = st.sidebar.text_input("Tiger Graph Secret", "")
+        # ###########################
         if len(modules_by_id.keys()) == 0:
             pass        
         else:
@@ -85,6 +92,9 @@ class AppPicker:
                 view = modules_by_id[view_id]
             else:
                 sorted_mods = sorted(modules_by_id.values(), key=lambda nfo: nfo['index'])
+
+
+
                 view_id = st.sidebar.selectbox(
                     '',
                     [nfo['id'] for nfo in sorted_mods],
@@ -92,6 +102,9 @@ class AppPicker:
                     format_func=(lambda id: modules_by_id[id]['name'].upper()))
                 view = modules_by_id[view_id]
                 query_params[self.VIEW_APP_ID_VAR] = view_id
+
+
+
                 st.experimental_set_query_params(**query_params)
 
         return view

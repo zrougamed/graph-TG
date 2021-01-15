@@ -24,7 +24,7 @@ from gremlin_python.process.traversal import WithOptions, T
 #  Controls how entrypoint.py picks it up
 
 
-app_id = 'tigergraph_fraud' 
+app_id = 'tigergraph_fraud'
 logger = getChild(app_id)
 urlParams = URLParam(app_id)
 node_id_col = 'id'
@@ -37,8 +37,8 @@ edge_label_col = 'Destination_Type'
 metrics = {'tigergraph_time': 0, 'graphistry_time': 0,
            'node_cnt': 0, 'edge_cnt': 0, 'prop_cnt': 0}
 
-
 conn = tg_helper.connect_to_tigergraph()
+
 
 # Define the name of the view
 def info():
@@ -93,62 +93,50 @@ def sidebar_area():
 
 def plot_url(nodes_df, edges_df):
     global metrics
-    # nodes_df = df_helper.flatten_df(nodes_df)
-    # edges_df = df_helper.flatten_df(edges_df)
+    # .encode_point_color("color") \
+    try:
+        logger.info('Starting graphistry plot')
+        tic = time.perf_counter()
+        g = graphistry \
+            .edges(edges_df) \
+            .bind(source='from_id', destination='to_id') \
+            .nodes(nodes_df) \
+            .bind(node='n') \
+            .addStyle(bg={'color': 'white'}) \
+            .encode_point_color('trust', palette=['red', 'green'], as_continuous=True) \
+            .encode_edge_color("color") \
+            .encode_point_icon('type', categorical_mapping={'User': 'laptop',
+                                                            'Transaction': 'server',
+                                                            'Device_Token': 'mobile',
+                                                            'Payment_Instrument': 'credit-card',
+                                                            },
+                               default_mapping='question') \
+            .settings(url_params={'play': 5000})
 
-    logger.info('Starting graphistry plot')
-    tic = time.perf_counter()
-    g = graphistry\
-        .edges(edges_df)\
-        .bind(source='from_id', destination='to_id')\
-        .nodes(nodes_df)\
-        .bind(node='n')\
-        .addStyle(bg={'color': 'white'})\
-        .encode_point_color("color")\
-        .encode_edge_color("color")\
-        .encode_point_icon('type', categorical_mapping={'User': 'laptop', 
-                                                        'Transaction': 'server',
-                                                        'Device_Token': 'mobile',
-                                                        'Payment_Instrument': 'credit-card',
-                                                        }, 
-                                                        default_mapping='question')    
 
-    # if not (node_label_col is None):
-    #     g = g.bind(point_title=node_label_col)
 
-    # if not (edge_label_col is None):
-    #     g = g.bind(edge_title=edge_label_col)
+        # if not (node_label_col is None):
+        #     g = g.bind(point_title=node_label_col)
 
-    url = g.plot(render=False)
-        
+        # if not (edge_label_col is None):
+        #     g = g.bind(edge_title=edge_label_col)
+
+        url = g.plot(render=False)
+    except Exception as e:
+        raise e
     toc = time.perf_counter()
-    metrics['graphistry_time'] = toc-tic
+    metrics['graphistry_time'] = toc - tic
     logger.info(f'Graphisty Time: {metrics["graphistry_time"]}')
     logger.info('Generated viz, got back urL: %s', url)
 
     return url
 
 
-# def path_to_df(p):
-#     nodes = {}
-#     edges = {}
-
-#     for triple in p:
-
-#         src_id = triple[0][T.id]
-#         nodes[src_id] = df_helper.vertex_to_dict(triple[0])
-
-#         dst_id = triple[2][T.id]
-#         nodes[dst_id] = df_helper.vertex_to_dict(triple[2])
-
-#         edges[triple[1][T.id]] = df_helper.edge_to_dict(
-#             triple[1], src_id, dst_id)
-
-#     return pd.DataFrame(nodes.values()), pd.DataFrame(edges.values())
 
 import pyTigerGraphBeta as tg
 import pandas as pd
 import datetime
+
 
 # Given filter settings, generate/cache/return dataframes & viz
 @st.cache(suppress_st_warning=True, allow_output_mutation=True)
@@ -157,36 +145,23 @@ def run_filters(max_trust, user_id):
     global conn
 
     if conn is None:
-        conn = tg.TigerGraphConnection(host="https://fraud-streamlit.i.tgcloud.io", graphname="AntiFraud", username="tigergraph", password="tigergraph")
-    
-    conn.getToken("t58pt35hvf6toh3o84q2hiqooqv6s9qt")
-    
-    # secret = conn.createSecret()
-    #token = conn.getToken("hna88qpb3g87l3b8qcv1v01eju75jnqr", setToken=True)
-    
-    ##################
+        conn = tg.TigerGraphConnection(host="https://fraud-streamlit.i.tgcloud.io", graphname="AntiFraud",
+                                       username="tigergraph", password="tigergraph")
 
-
+    conn.getToken("tufp2os5skgljafj7ol4ikht2atc7rbj")
     logger.info('Querying Tigergraph')
     tic = time.perf_counter()
 
-    ################
-    #t = g.V().inE()
+    results_TG = conn.runInstalledQuery("fraudConnectivity", {"inputUser": user_id, "trustScore": max_trust},
+                                     sizeLimit=1000000000)
+    results = results_TG[3]['@@visResult']
+    results_trust_source = results_TG[0]['@@trustS']
+    results_trust_destination = results_TG[1]['@@trustD']
 
-    # q = conn.runInstalledQuery("getGraph")
-    # edges = q[0]['@@AllE']
-
-    results = conn.runInstalledQuery("fraudConnectivity", {"inputUser": user_id, "trustScore": max_trust}, sizeLimit=1000000000
-                                     , timeout=120000)
-    results = results[1]['@@visResult']
-
-    out = []
+    trust = []
     from_ids = []
     to_ids = []
-    times = []
-    amounts = []
     types = []
-    node_types = []
     from_types = []
     to_types = []
 
@@ -200,25 +175,34 @@ def run_filters(max_trust, user_id):
     edges_df = pd.DataFrame({
         'from_id': from_ids,
         'to_id': to_ids,
-        # 'amount': amounts,
-        # 'time': times,
         'type': types
     })
     node_idf = []
     typef = []
+    trustf = []
     for i in range(len(from_ids)):
         if from_ids[i] not in node_idf:
+            try:
+                trustf.append(results_trust_source[str(from_ids[i])][0])
+            except:
+                trustf.append(0)
             node_idf.append(from_ids[i])
             typef.append(from_types[i])
         if to_ids[i] not in node_idf:
+            try:
+                trustf.append(results_trust_destination[str(to_ids[i])][0])
+            except:
+                trustf.append(0)
             node_idf.append(to_ids[i])
             typef.append(to_types[i])
 
+
+
     nodeType2color = {
-        'User': 0x00000000,                 # black
-        'Transaction': 0xFF000000,          # red
-        'Payment_Instrument': 0xFF00FF00,   # Purple
-        'Device_Token': 0x00FFFF00          # Light Blue
+        'User': 0x00000000,  # black
+        'Transaction': 0xFF000000,  # red
+        'Payment_Instrument': 0xFF00FF00,  # Purple
+        'Device_Token': 0x00FFFF00  # Light Blue
     }
 
     edgeType2color = {
@@ -233,26 +217,31 @@ def run_filters(max_trust, user_id):
     }
 
     nodes_df = pd.DataFrame({
-        'n': node_idf ,
+        'n': node_idf,
         'type': typef,
-        'size':0.1
+        'trust': trustf,
+        'size': 0.1
     })
-
-    nodes_df['color'] = nodes_df['type'].apply(lambda type_str: nodeType2color[type_str])
+     # red
+    # [255(1-trustscore), 0, 0]
+    # green
+    # [0,255*trustscore,0]
+    #
+    # nodes_df['color'] = nodes_df['trust'].apply(lambda trust_score:  '0x%02x%02x%02x' % (int(255 * (1 - trust_score)), int(255 * trust_score), 0))
     edges_df['color'] = edges_df['type'].apply(lambda type_str: edgeType2color[type_str])
 
     try:
         res = nodes_df.values.tolist()
         toc = time.perf_counter()
-        logger.info(f'Query Execution: {toc-tic:0.02f} seconds')
+        logger.info(f'Query Execution: {toc - tic:0.02f} seconds')
         logger.debug('Query Result Count: %s', len(res))
-        metrics['tigergraph_time'] = toc-tic
+        metrics['tigergraph_time'] = toc - tic
 
         # Calculate the metrics
         metrics['node_cnt'] = nodes_df.size
         metrics['edge_cnt'] = edges_df.size
         metrics['prop_cnt'] = (nodes_df.size * nodes_df.columns.size) + \
-            (edges_df.size * edges_df.columns.size)
+                              (edges_df.size * edges_df.columns.size)
 
         if nodes_df.size > 0:
             url = plot_url(nodes_df, edges_df)
@@ -271,7 +260,7 @@ def run_filters(max_trust, user_id):
         if str(e) == "There is no current event loop in thread 'ScriptRunner.scriptThread'.":
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            
+
         else:
             raise e
 
@@ -293,14 +282,15 @@ def main_area(url, nodes, edges, user_id):
     transfer_type = []
     results = None
     if conn is None:
-        conn = tg.TigerGraphConnection(host="https://fraud-streamlit.i.tgcloud.io", graphname="AntiFraud", username="tigergraph", password="tigergraph")
-    
-    conn.getToken("t58pt35hvf6toh3o84q2hiqooqv6s9qt")
+        conn = tg.TigerGraphConnection(host="https://fraud-streamlit.i.tgcloud.io", graphname="AntiFraud",
+                                       username="tigergraph", password="tigergraph")
+
+    conn.getToken("tufp2os5skgljafj7ol4ikht2atc7rbj")
     try:
         results = conn.runInstalledQuery("totalTransaction", params={"Source": user_id})[0]
     except Exception as e:
         print(e)
-    
+
     # Create bar chart of transactions
     if results != None:
         for action in results:
@@ -314,13 +304,15 @@ def main_area(url, nodes, edges, user_id):
         cols = sorted(cols, key=lambda x: x[0].year)
         df = pd.DataFrame(data=cols, columns=['Date', 'Amount', 'Type'])
         df['Date'] = pd.to_datetime(df['Date'])
-        map_color = {"receive":"rgba(0,0,255,0.5)", "transfer":"rgba(255,0,0,0.5)"}
+        map_color = {"receive": "rgba(0,0,255,0.5)", "transfer": "rgba(255,0,0,0.5)"}
         df['Color'] = df['Type'].map(map_color)
 
         df = df.groupby([df['Date'].dt.to_period('M'), 'Type', 'Color']).sum()
         df = df.reset_index(level=['Type', 'Color'])
         df.index = df.index.values.astype('datetime64[M]')
-        bar = px.bar(df, x=df.index, y='Amount', labels={'x': 'Date'}, color='Type', color_discrete_map = map_color, text='Amount', title="Transaction Amounts by Month for User {}".format(user_id), height=350, barmode='group')
+        bar = px.bar(df, x=df.index, y='Amount', labels={'x': 'Date'}, color='Type', color_discrete_map=map_color,
+                     text='Amount', title="Transaction Amounts by Month for User {}".format(user_id), height=350,
+                     barmode='group')
         bar.update_xaxes(
             dtick="M1",
             tickformat="%b\n%Y")
@@ -350,7 +342,6 @@ def main_area(url, nodes, edges, user_id):
 
 
 def run_all():
-
     custom_css()
 
     try:
