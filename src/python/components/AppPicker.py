@@ -114,12 +114,12 @@ class AppPicker:
         mods = self.list_modules()
         view = self.get_and_set_active_app()
         
-        if len(mods.keys()) == 0:
-            st.sidebar.header('Create src/views/myapp/__init__.py::run()')
-        elif len(mods.keys()) == 1:
-            pass
-        else:
-            st.sidebar.title(view['name'])
+        # if len(mods.keys()) == 0:
+        #     st.sidebar.header('Create src/views/myapp/__init__.py::run()')
+        # elif len(mods.keys()) == 1:
+        #     pass
+        # else:
+        #     st.sidebar.title(view['name'])
 
         if not (view is None):
             logger.info('running mod: %s / %s', view, view['module'])

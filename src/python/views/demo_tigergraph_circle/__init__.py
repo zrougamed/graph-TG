@@ -78,6 +78,35 @@ def sidebar_area():
     num_edges_init = urlParams.get_field('num_matches', 0.5)
     # MI_List.reverse()
     idList = [i for i in range(1, 500)]
+    st.sidebar.header("TigerGraph Anti-Fraud")
+    tg_host = st.sidebar.text_input ('TigerGraph Host')
+    tg_username = st.sidebar.text_input ('TigerGraph Username')
+    tg_password = st.sidebar.text_input ('TigerGraph Password')
+    tg_graphname = st.sidebar.text_input ('TigerGraph Graphname')
+    tg_secret = st.sidebar.text_input('TigerGraph Secret')
+    
+    if st.sidebar.button("Connect"):
+        try:
+            conn = tg.TigerGraphConnection(host=tg_host, graphname=tg_graphname, username=tg_username, password=tg_password)
+            if tg_secret:
+                conn.getToken(tg_secret)
+            else:
+                conn.getToken(conn.createSecret())
+            st.sidebar.success("Connnected Successfully")
+            user_id = st.sidebar.selectbox(
+                'User ID ',
+                idList
+            )
+            urlParams.set_field('user_id', user_id)
+
+            return {'user_id': user_id, 'conn': conn}
+
+        except:
+            st.sidebar.error("Failed to Connect")
+            return None
+    
+    return None
+
     user_id = st.sidebar.selectbox(
         'User ID ',
         idList
@@ -85,7 +114,7 @@ def sidebar_area():
 
     urlParams.set_field('user_id', user_id)
 
-    return {'user_id': user_id}
+    return {'user_id': user_id, 'conn': conn}
 
 
 def plot_url(nodes_df, edges_df):
@@ -99,7 +128,7 @@ def plot_url(nodes_df, edges_df):
 
     g = graphistry \
         .edges(edges_df) \
-        .settings(url_params={'play': 7000}) \
+        .settings(url_params={'play': 7000, 'dissuadeHubs': True}) \
         .bind(edge_weight='amount')      \
         .bind(source='from_id', destination='to_id') \
         .bind(edge_title='amount', edge_label='amount') \
@@ -151,21 +180,50 @@ import datetime
 
 # Given filter settings, generate/cache/return dataframes & viz
 @st.cache(suppress_st_warning=True, allow_output_mutation=True)
-def run_filters(user_id):
+def run_filters(user_id, conn):
     global metrics
-    global conn
+    # global conn
 
-    if conn is None:
-        conn = tg.TigerGraphConnection(host="https://fraud-streamlit.i.tgcloud.io", graphname="AntiFraud",
-                                       username="tigergraph", password="tigergraph")
+    # if conn is None:
+    #     conn = tg.TigerGraphConnection(host="https://fraud-streamlit.i.tgcloud.io", graphname="AntiFraud",
+    #                                    username="tigergraph", password="tigergraph")
 
-    conn.getToken("tufp2os5skgljafj7ol4ikht2atc7rbj")
+    # conn.getToken("tufp2os5skgljafj7ol4ikht2atc7rbj")
+    logger.info("Installing Queries")
+    res = conn.gsql(
+    '''
+    use graph {}
+    ls 
+    '''.format(conn.graphname), options=[])
+
+    ind = res.index('Queries:') + 1
+    installTran = True
+    for query in res[ind:]:
+        if 'totalTransaction' in query:
+            installTran = False
+    
+    if installTran:
+        conn.gsql(
+        '''
+        use graph AntiFraud
+        CREATE QUERY totalTransaction(Vertex<User> Source) FOR GRAPH AntiFraud {  
+            start = {Source};
+
+            transfer = SELECT tgt
+                FROM start:s -(User_Transfer_Transaction:e) - :tgt;
+
+            receive = select tgt
+                FROM start:s -(User_Recieve_Transaction:e) -:tgt;
+
+            PRINT transfer, receive;
+        }
+        Install query totalTransaction 
+        ''', options=[])
 
     logger.info('Querying Tigergraph')
     tic = time.perf_counter()
 
-    results = conn.runInstalledQuery("circleDetection", {"srcId": user_id, "stepHighLimit": 7}, sizeLimit=1000000000
-                                     , timeout=120000)
+    results = conn.runInstalledQuery("circleDetection", {"srcId": user_id}, sizeLimit=1000000000, timeout=120000)
     results = results[0]['@@circleEdgeTuples']
 
     out = []
@@ -211,13 +269,13 @@ def run_filters(user_id):
             typef.append(to_types[i])
 
     nodeType2color = {
-        'User': 0x00000000,  # black
-        'Transaction': 0xFF000000  # red
+        'User': 0xFF740000,  # orange
+        'Transaction': 0xA5A5A500  # light gray
     }
 
     edgeType2color = {
-        'User_Transfer_Transaction': 0x00FF0000,
-        'User_Recieve_Transaction_Rev': 0x0000FF00
+        'User_Transfer_Transaction': 0x00000000,    # black
+        'User_Recieve_Transaction_Rev': 0x60B9E000  # light blue
     }
 
     nodes_df = pd.DataFrame({
@@ -268,11 +326,11 @@ def run_filters(user_id):
         logger.error('oops in TigerGraph', exc_info=True)
         raise e
 
-    return {'nodes_df': nodes_df, 'edges_df': edges_df, 'url': url, 'res': res}
+    return {'nodes_df': nodes_df, 'edges_df': edges_df, 'url': url, 'res': res, 'conn': conn}
 
 
-def main_area(url, nodes, edges, user_id):
-    global conn
+def main_area(url, nodes, edges, user_id, conn):
+    # global conn
 
     logger.debug('rendering main area, with url: %s', url)
     GraphistrySt().render_url(url)
@@ -281,11 +339,11 @@ def main_area(url, nodes, edges, user_id):
     amounts = []
     transfer_type = []
     results = None
-    if conn is None:
-        conn = tg.TigerGraphConnection(host="https://fraud-streamlit.i.tgcloud.io", graphname="AntiFraud",
-                                       username="tigergraph", password="tigergraph")
+    # if conn is None:
+    #     conn = tg.TigerGraphConnection(host="https://fraud-streamlit.i.tgcloud.io", graphname="AntiFraud",
+    #                                    username="tigergraph", password="tigergraph")
 
-    conn.getToken("tufp2os5skgljafj7ol4ikht2atc7rbj")
+    # conn.getToken("tufp2os5skgljafj7ol4ikht2atc7rbj")
     try:
         results = conn.runInstalledQuery("totalTransaction", params={"Source": user_id})[0]
     except Exception as e:
@@ -351,6 +409,9 @@ def run_all():
 
         # Compute filter pipeline (with auto-caching based on filter setting inputs)
         # Selective mark these as URL params as well
+        if sidebar_filters is None:
+            return
+       
         filter_pipeline_result = run_filters(**sidebar_filters)
 
         # Render main viz area based on computed filter pipeline results and sidebar settings if data is returned
@@ -358,7 +419,8 @@ def run_all():
             main_area(filter_pipeline_result['url'],
                       filter_pipeline_result['nodes_df'],
                       filter_pipeline_result['edges_df'],
-                      sidebar_filters['user_id'])
+                      sidebar_filters['user_id'],
+                      filter_pipeline_result['conn'])
         else:  # render a message
             st.write("No data matching the specfiied criteria is found")
 

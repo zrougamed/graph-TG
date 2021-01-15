@@ -37,7 +37,7 @@ edge_label_col = 'Destination_Type'
 metrics = {'tigergraph_time': 0, 'graphistry_time': 0,
            'node_cnt': 0, 'edge_cnt': 0, 'prop_cnt': 0}
 
-conn = tg_helper.connect_to_tigergraph()
+# conn = None
 
 
 # Define the name of the view
@@ -72,28 +72,60 @@ def custom_css():
 # Given URL params, render left sidebar form and return combined filter settings
 # https://docs.streamlit.io/en/stable/api.html#display-interactive-widgets
 def sidebar_area():
+    conn = None
     # q = conn.runInstalledQuery("mostDirectInfections")
     # Most_infectious_IDS = q[0]['Answer']
     # MI_List = [d['v_id'] for d in Most_infectious_IDS if 'v_id' in d]
     num_edges_init = urlParams.get_field('num_matches', 0.5)
     # MI_List.reverse()
     idList = [i for i in range(1, 500)]
+    st.sidebar.header("TigerGraph Anti-Fraud")
+    tg_host = st.sidebar.text_input ('TigerGraph Host')
+    tg_username = st.sidebar.text_input ('TigerGraph Username')
+    tg_password = st.sidebar.text_input ('TigerGraph Password')
+    tg_graphname = st.sidebar.text_input ('TigerGraph Graphname')
+    tg_secret = st.sidebar.text_input('TigerGraph Secret')
+    
+    if st.sidebar.button("Connect"):
+        try:
+            conn = tg.TigerGraphConnection(host=tg_host, graphname=tg_graphname, username=tg_username, password=tg_password)
+            if tg_secret:
+                conn.getToken(tg_secret)
+            else:
+                conn.getToken(conn.createSecret())
+            st.sidebar.success("Connnected Successfully")
+            user_id = st.sidebar.selectbox(
+                'User ID ',
+                idList
+            )
+            urlParams.set_field('user_id', user_id)
+
+            return {'user_id': user_id, 'conn': conn}
+
+        except:
+            st.sidebar.error("Failed to Connect")
+            return None
+    
+    return None
     user_id = st.sidebar.selectbox(
         'User ID ',
         idList
     )
 
-    max_trust = st.sidebar.slider(
-        'Maximum Trust Score', min_value=0.01, max_value=1.00, value=num_edges_init)
-    urlParams.set_field('max_trust', max_trust)
+
+    # max_trust = st.sidebar.slider(
+    #     'Maximum Trust Score', min_value=0.01, max_value=1.00, value=num_edges_init)
+    # urlParams.set_field('max_trust', max_trust)
     urlParams.set_field('user_id', user_id)
 
-    return {'max_trust': max_trust, 'user_id': user_id}
+    return {'user_id': user_id, 'conn': conn}
 
 
 def plot_url(nodes_df, edges_df):
     global metrics
     # .encode_point_color("color") \
+    # .encode_point_color('trust', palette=['red', 'green'], as_continuous=True) \
+    # .encode_point_color('type', categorical_mapping={'Transaction': 'black', 'Device_Token': 'blue'})\
 
     try:
         logger.info('Starting graphistry plot')
@@ -104,7 +136,7 @@ def plot_url(nodes_df, edges_df):
             .nodes(nodes_df) \
             .bind(node='n') \
             .addStyle(bg={'color': 'white'}) \
-            .encode_point_color('trust', palette=['red', 'green'], as_continuous=True) \
+            .encode_point_color("color") \
             .encode_edge_color("color") \
             .encode_point_icon('type', categorical_mapping={'User': 'laptop',
                                                             'Transaction': 'server',
@@ -112,7 +144,7 @@ def plot_url(nodes_df, edges_df):
                                                             'Payment_Instrument': 'credit-card',
                                                             },
                                default_mapping='question') \
-            .settings(url_params={'play': 5000})
+            .settings(url_params={'play': 7000, 'dissuadeHubs': True})
 
 
 
@@ -141,21 +173,95 @@ import datetime
 
 # Given filter settings, generate/cache/return dataframes & viz
 @st.cache(suppress_st_warning=True, allow_output_mutation=True)
-def run_filters(max_trust, user_id):
+def run_filters(user_id, conn):
     global metrics
-    global conn
+    # global conn
 
-    if conn is None:
-        conn = tg.TigerGraphConnection(host="https://fraud-streamlit.i.tgcloud.io", graphname="AntiFraud",
-                                       username="tigergraph", password="tigergraph")
+    # if conn is None:
+    #     conn = tg.TigerGraphConnection(host="https://fraud-streamlit.i.tgcloud.io", graphname="AntiFraud",
+    #                                    username="tigergraph", password="tigergraph")
 
-    conn.getToken("tufp2os5skgljafj7ol4ikht2atc7rbj")
+    # conn.getToken("tufp2os5skgljafj7ol4ikht2atc7rbj")
+    logger.info("Installing Queries")
+    res = conn.gsql(
+    '''
+    use graph {}
+    ls 
+    '''.format(conn.graphname), options=[])
+
+    ind = res.index('Queries:') + 1
+    installTran = True
+    installFraud = True
+    for query in res[ind:]:
+        if 'totalTransaction' in query:
+            installTran = False
+        if 'fraudConnectivityGraph' in query:
+            installFraud = False
+    
+    if installTran:
+        conn.gsql(
+        '''
+        use graph AntiFraud
+        CREATE QUERY totalTransaction(Vertex<User> Source) FOR GRAPH AntiFraud {  
+            start = {Source};
+
+            transfer = SELECT tgt
+                FROM start:s -(User_Transfer_Transaction:e) - :tgt;
+
+            receive = select tgt
+                FROM start:s -(User_Recieve_Transaction:e) -:tgt;
+
+            PRINT transfer, receive;
+        }
+        Install query totalTransaction 
+        ''', options=[])
+    
+    if installFraud:
+        conn.gsql(
+        '''
+        use graph AntiFraud
+        CREATE QUERY fraudConnectivityGraph (VERTEX<User> inputUser) FOR GRAPH AntiFraud {
+            /* 
+            This query finds all connect users/payment cards/device .  
+
+            Starting with a user X find all other users connected to  
+            X through device token, payment instrument connected via transactions
+
+            Sample input
+            User: any integer between 1 and 500
+            */
+            MapAccum<VERTEX,SetAccum <float>> @@trustS,@@trustD;
+            OrAccum<bool> @visited;
+            SetAccum<edge> @@visResult;
+
+            Start (_) = {inputUser};  
+
+            // keep traverse for 3 steps
+            WHILE Start.size()>0 limit 5 DO
+                Start = SELECT t
+                    FROM Start:s-(:e)-:t
+                    WHERE t.@visited == false AND t != inputUser 
+                    ACCUM	
+                    @@visResult += e,
+                    @@trustS +=  (s -> s.trust_score),
+                    @@trustD +=  (t -> t.trust_score)
+                    POST-ACCUM
+                    t.@visited += true;
+            END;
+            print @@trustS;
+            print @@trustD;
+            print @@visResult;
+        }
+        Install query fraudConnectivityGraph
+        ''', options=[])
+
+        
+    
     logger.info('Querying Tigergraph')
     tic = time.perf_counter()
 
-    results_TG = conn.runInstalledQuery("fraudConnectivity", {"inputUser": user_id, "trustScore": max_trust},
-                                     sizeLimit=1000000000)
-    results = results_TG[3]['@@visResult']
+    results_TG = conn.runInstalledQuery("fraudConnectivityGraph", {"inputUser": user_id}, sizeLimit=1000000000)
+    results = results_TG[2]['@@visResult']
     results_trust_source = results_TG[0]['@@trustS']
     results_trust_destination = results_TG[1]['@@trustD']
 
@@ -199,19 +305,36 @@ def run_filters(max_trust, user_id):
 
 
 
-    nodeType2color = {
-        'User': 0x00000000,  # black
-        'Transaction': 0xFF000000,  # red
-        'Payment_Instrument': 0xFF00FF00,  # Purple
-        'Device_Token': 0x00FFFF00  # Light Blue
-    }
+    def nodeType2color(node_type, trust):
+        if node_type == 'User':
+            if trust < 0.2:
+                return 0xED293800       # red
+            elif trust < 0.4:
+                return 0xB25F4A00
+            elif trust < 0.6:
+                return 0x77945C00
+            elif trust < 0.8:
+                return 0x3BCA6800
+            else:
+                return 0x00FF7F00       # green
+
+        elif node_type == 'Transaction':
+            return 0x00000000  # black
+        elif node_type == 'Payment_Instrument':
+            return 0xFF00FF00  # Purple
+        elif node_type == 'Device_Token':
+            return 0x00FFFF00  # Light Blue
+        
+        else:
+            return 0xFFFFFF00
+    
 
     edgeType2color = {
-        'User_Transfer_Transaction': 0x00FF0000,
-        'User_Recieve_Transaction_Rev': 0x0000FF00,
-        'User_to_Payment': 0x00F0FF00,
-        'User_to_Device': 0xFF0FF000,
-        'User_Referred_By_User': 0xF0F0F000,
+        'User_Transfer_Transaction': 0xFF740000,    # orange
+        'User_Recieve_Transaction_Rev': 0xA5A5A500, # light gray
+        'User_to_Payment': 0x42424200,              # dark gray
+        'User_to_Device': 0xF5B61700,               # yellow
+        'User_Referred_By_User': 0x60B9E000,        # light blue
         'User_Recieve_Transaction': 0x0F0F0F00,
         'User_Transfer_Transaction_Rev': 0xFF00FF00,
         'User_Refer_User': 0xFF0F0F00
@@ -228,7 +351,7 @@ def run_filters(max_trust, user_id):
     # green
     # [0,255*trustscore,0]
     #
-    # nodes_df['color'] = nodes_df['trust'].apply(lambda trust_score:  '0x%02x%02x%02x' % (int(255 * (1 - trust_score)), int(255 * trust_score), 0))
+    nodes_df['color'] = nodes_df.apply(lambda x: nodeType2color(x['type'], x['trust']), axis=1)
     edges_df['color'] = edges_df['type'].apply(lambda type_str: edgeType2color[type_str])
 
     try:
@@ -249,7 +372,7 @@ def run_filters(max_trust, user_id):
         else:
             url = ""
     except Exception as e:
-        logger.error('oops in TigerGraph', exc_info=True)
+        logger.error('error in TigerGraph', exc_info=True)
         raise e
 
     logger.info("Finished compute phase")
@@ -269,11 +392,11 @@ def run_filters(max_trust, user_id):
         logger.error('oops in TigerGraph', exc_info=True)
         raise e
 
-    return {'nodes_df': nodes_df, 'edges_df': edges_df, 'url': url, 'res': res}
+    return {'nodes_df': nodes_df, 'edges_df': edges_df, 'url': url, 'res': res, 'conn': conn}
 
 
-def main_area(url, nodes, edges, user_id):
-    global conn
+def main_area(url, nodes, edges, user_id, conn):
+    # global conn
 
     logger.debug('rendering main area, with url: %s', url)
     GraphistrySt().render_url(url)
@@ -282,11 +405,11 @@ def main_area(url, nodes, edges, user_id):
     amounts = []
     transfer_type = []
     results = None
-    if conn is None:
-        conn = tg.TigerGraphConnection(host="https://fraud-streamlit.i.tgcloud.io", graphname="AntiFraud",
-                                       username="tigergraph", password="tigergraph")
+    # if conn is None:
+    #     conn = tg.TigerGraphConnection(host="https://fraud-streamlit.i.tgcloud.io", graphname="AntiFraud",
+    #                                    username="tigergraph", password="tigergraph")
 
-    conn.getToken("tufp2os5skgljafj7ol4ikht2atc7rbj")
+    # conn.getToken("tufp2os5skgljafj7ol4ikht2atc7rbj")
     try:
         results = conn.runInstalledQuery("totalTransaction", params={"Source": user_id})[0]
     except Exception as e:
@@ -352,6 +475,9 @@ def run_all():
 
         # Compute filter pipeline (with auto-caching based on filter setting inputs)
         # Selective mark these as URL params as well
+        if sidebar_filters is None:
+            return
+            
         filter_pipeline_result = run_filters(**sidebar_filters)
 
         # Render main viz area based on computed filter pipeline results and sidebar settings if data is returned
@@ -359,7 +485,8 @@ def run_all():
             main_area(filter_pipeline_result['url'],
                       filter_pipeline_result['nodes_df'],
                       filter_pipeline_result['edges_df'],
-                      sidebar_filters['user_id'])
+                      sidebar_filters['user_id'],
+                      filter_pipeline_result['conn'])
         else:  # render a message
             st.write("No data matching the specfiied criteria is found")
 
